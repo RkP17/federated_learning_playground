@@ -3,10 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from datasets import load_dataset
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 
 import torchvision.datasets as datasets
 from torchvision.transforms import Compose, Normalize, ToTensor
@@ -28,81 +25,153 @@ class MLP(nn.Module):
         x = F.relu(self.fcl2(x))
         return self.fcl3(x)
 
+def getSizes(datasetSize, num_partitions):
+    base_size = datasetSize // num_partitions
+    
+    # give the remaineder of the subsets to the first few clients
+    remainder = datasetSize % num_partitions
+    
+    sizes = [
+        base_size + (1 if i < remainder else 0)
+        for i in range(num_partitions)
+    ]
+    
+    return sizes
 
-fds = None  # Cache FederatedDataset
+train_ds = None  # Cache Dataset for training
+test_ds = None # Cache Dataset for testing
 
-pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-
-def apply_transforms(batch):
-    """Apply transforms to the partition from FederatedDataset."""
-    batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
-    return batch
-
-
+# where the clients get their data
 def load_data(partition_id: int, num_partitions: int, batch_size: int):
     """Load partition MNIST data."""
-    # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        # IidPartitioner divides data between clients 
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
+    global train_ds, test_ds
+    
+    if train_ds is None:
+        train_ds = datasets.MNIST(
+            root="../data",
+            train=True,
+            download=False,
+            transform=ToTensor()
         )
-    partition = fds.load_partition(partition_id)
+    
+    if test_ds is None:
+        test_ds = datasets.MNIST(
+            root="../data",
+            train=False,
+            download=False,
+            transform=ToTensor()
+        )
+    
+    # define generator 
+    gen = torch.Generator().manual_seed(42)
+
+    # ------------ Train split -------------- #
+    # random split to partition the data between clients
+    partition_train = random_split(train_ds, getSizes(len(train_ds), num_partitions), generator=gen)
+    
+    client_train_subset =  partition_train[partition_id]
+    
     # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    # Construct dataloaders
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
+    train_size = int(0.8* len(client_train_subset))
+    val_size = len(client_train_subset) - train_size
+    
+    client_train, client_val = random_split(client_train_subset, [train_size,val_size], generator=gen) # returns a dict 
+    
+    # ---------------- Test split ----------------- #
+    partition_test = random_split(test_ds, getSizes(len(test_ds), num_partitions), generator=gen)
+    
+    client_test_subset = partition_test[partition_id]
+    
+    
+    # ------------ Construct dataloaders ---------- #
     trainloader = DataLoader(
-        partition_train_test["train"], batch_size=batch_size, shuffle=True
+        client_train, batch_size=batch_size, shuffle=True
     )
-    testloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
-    return trainloader, testloader
+    
+    valloader = DataLoader(
+        client_val, batch_size=batch_size, shuffle=True
+    )
+
+    testloader = DataLoader(client_test_subset, batch_size=batch_size, shuffle=True)
+    return trainloader, valloader, testloader
 
 
+# Used to test the global model - might remove this ... plan to test the model on each client
 def load_centralized_dataset():
     """Load test set and return dataloader."""
-    # Load entire test set
-    test_dataset = load_dataset("uoft-cs/cifar10", split="test")
-    dataset = test_dataset.with_format("torch").with_transform(apply_transforms)
-    return DataLoader(dataset, batch_size=128)
+    global test_ds
+
+    if test_ds is None:
+        test_ds = datasets.MNIST(
+            root="../data",
+            train=False,
+            download=False,
+            transform=ToTensor()
+        )
+    # return the whole test datset
+    return DataLoader(test_ds, batch_size=128)
 
 
 def train(net, trainloader, epochs, lr, device):
     """Train the model on the training set."""
+    
     net.to(device)  # move model to GPU if available
-    criterion = torch.nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+    loss_function = torch.nn.CrossEntropyLoss().to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     net.train()
+    
     running_loss = 0.0
-    for _ in range(epochs):
-        for batch in trainloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
-            optimizer.zero_grad()
-            loss = criterion(net(images), labels)
+    total = 0
+    
+    for epoch in range(epochs):
+        print(f"Starting training for epoch {epoch} ...")
+        for inputs, labels in trainloader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
+            optimizer.zero_grad() # clear prev gradients
+            
+            outputs = net(inputs)
+            
+            loss = loss_function(outputs, labels)
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
-    avg_trainloss = running_loss / (epochs * len(trainloader))
+            
+            
+            total += labels.size(0)
+            running_loss += loss.item() * labels.size(0)
+            
+            
+            print(f'Loss: {running_loss / len(trainloader):.4f}')
+
+    avg_trainloss = running_loss / total
     return avg_trainloss
 
 
 def test(net, testloader, device):
     """Validate the model on the test set."""
+    
     net.to(device)
-    criterion = torch.nn.CrossEntropyLoss()
-    correct, loss = 0, 0.0
+    net.eval()
+    loss_function = torch.nn.CrossEntropyLoss()
+    correct, total, running_loss = 0, 0, 0.0
+    
+    all_predicted, all_labels = [], []
+    
     with torch.no_grad():
-        for batch in testloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
-            outputs = net(images)
-            loss += criterion(outputs, labels).item()
-            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
-    accuracy = correct / len(testloader.dataset)
-    loss = loss / len(testloader)
-    return loss, accuracy
+        for inputs, labels in testloader:
+            outputs = net(inputs)
+            
+            _, predicted = torch.max(outputs, 1)
+            
+            total += labels.size(0)
+            running_loss += loss_function(outputs, labels).item()
+            
+            correct += (predicted == labels).sum().item()
+            
+            all_predicted.extend(predicted)
+            all_labels.extend(labels)
+            
+    accuracy = correct / total
+    average_loss = running_loss / total
+    return average_loss, accuracy, all_labels, all_predicted
