@@ -165,7 +165,10 @@ def test(net, testloader, device):
             _, predicted = torch.max(outputs, 1)
             
             total += labels.size(0)
-            running_loss += loss_function(outputs, labels).item()
+            # cross entropy loss returns mean loss for a batch
+            loss = loss_function(outputs, labels)
+            
+            running_loss += loss.item() * labels.size(0)
             
             correct += (predicted == labels).sum().item()
             

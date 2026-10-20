@@ -1,0 +1,13 @@
+{
+    "flower_run_id": 7851422975827665554,
+    "timestamp": "20261020_102023",
+    "dataset": "MNIST",
+    "model": "MLP",
+    "partition_method": "random IID",
+    "learning_rate": 0.005,
+    "fraction_evaluate": 1.0,
+    "num_rounds": 2,
+    "seed": 42,
+    "num_supernodes": 5,
+    "differential_privacy": false
+}
