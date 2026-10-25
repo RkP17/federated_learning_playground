@@ -18,3 +18,5 @@ __pycache__/
 data/*
 
 results/
+
+02_federated_learning/max_norm_results.csv
