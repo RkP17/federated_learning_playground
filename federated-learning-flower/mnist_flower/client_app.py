@@ -3,6 +3,7 @@
 import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
+from flwr.clientapp.mod import LocalDpMod
 
 from mnist_flower.task import MLP, load_data
 from mnist_flower.task import test as test_fn
@@ -14,6 +15,8 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 # Flower ClientApp
 app = ClientApp()
 
+# instance of loaclDPmod
+local_dp_obj = LocalDpMod(app.clipping_norm, app.sensitivity, app.epsilon, app.delta)
 
 @app.train()
 def train(msg: Message, context: Context):
