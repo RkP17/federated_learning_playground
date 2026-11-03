@@ -50,7 +50,7 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
         train_ds = datasets.MNIST(
             root="../data",
             train=True,
-            download=False,
+            download=True,
             transform=ToTensor()
         )
     
@@ -58,7 +58,7 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
         test_ds = datasets.MNIST(
             root="../data",
             train=False,
-            download=False,
+            download=True,
             transform=ToTensor()
         )
     
@@ -96,7 +96,7 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
     return trainloader, valloader, testloader
 
 
-# Used to test the global model - might remove this ... plan to test the model on each client
+# Used to test the global model - might remove this ... maybe just test the model on each client
 def load_centralized_dataset():
     """Load test set and return dataloader."""
     global test_ds
@@ -105,7 +105,7 @@ def load_centralized_dataset():
         test_ds = datasets.MNIST(
             root="../data",
             train=False,
-            download=False,
+            download=True,
             transform=ToTensor()
         )
     # return the whole test datset
@@ -141,11 +141,11 @@ def train(net, trainloader, epochs, lr, device):
             total += labels.size(0)
             running_loss += loss.item() * labels.size(0)
             
-            
-            print(f'Loss: {running_loss / len(trainloader):.4f}')
 
-    avg_trainloss = running_loss / total
-    return avg_trainloss
+    avg_epoch_loss = running_loss / total
+    print(f"Epoch {epoch + 1}: Loss = {avg_epoch_loss:.4f}")
+    
+    return avg_epoch_loss
 
 
 def test(net, testloader, device):
@@ -160,6 +160,9 @@ def test(net, testloader, device):
     
     with torch.no_grad():
         for inputs, labels in testloader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            
             outputs = net(inputs)
             
             _, predicted = torch.max(outputs, 1)

@@ -12,6 +12,7 @@ from mnist_flower.task import MLP, load_centralized_dataset, test
 from pathlib import Path
 from datetime import datetime
 import json
+import math
 
 # Create ServerApp
 app = ServerApp()
@@ -25,13 +26,24 @@ def main(grid: Grid, context: Context) -> None:
     fraction_evaluate: float = context.run_config["fraction-evaluate"]
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["learning-rate"]
+    num_of_clients = context.run_config["num-of-clients"]
+
+    # Differential privacy parameters
+    clipping_norm = float(context.run_config["clipping-norm"])
+    sensitivity = float(context.run_config["sensitivity"])
+    epsilon = float(context.run_config["epsilon"])
+    delta = float(context.run_config["delta"])
 
     # Load global model
     global_model = MLP()
     arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy
-    strategy = FedAvg(fraction_evaluate=fraction_evaluate)
+    strategy = FedAvg(
+        fraction_evaluate=fraction_evaluate,
+        min_available_nodes=num_of_clients
+        
+    )
     
     global_metrics = []
 
@@ -44,7 +56,7 @@ def main(grid: Grid, context: Context) -> None:
         evaluate_fn= lambda server_rounds, arrays: global_evaluate(server_rounds, arrays, global_metrics),
     )
     
-    dev_mode = False
+    dev_mode = True
     
     # Save the final results into a csv file 
     run_id = context.run_id
@@ -59,6 +71,15 @@ def main(grid: Grid, context: Context) -> None:
         )
     
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Calculate Gaussian noise standard deviation
+    noise_std = (
+        sensitivity * math.sqrt(2 * math.log(1.25 / delta))
+    ) / epsilon
+    
+    noise_multiplier = noise_std / clipping_norm
+    
+    dp = True
 
     print(f"Saving experiment results to: {results_dir.resolve()}") 
     
@@ -77,8 +98,15 @@ def main(grid: Grid, context: Context) -> None:
         "fraction_evaluate": fraction_evaluate,
         "num_rounds": num_rounds,
         "seed": 42,
-        "num_supernodes": 5,
-        "differential_privacy": False
+        "num_supernodes": context.run_config["num-of-clients"],
+        # Differential privacy configuration
+        "differential_privacy": dp,
+        "clipping_norm": clipping_norm if dp else "N/A",
+        "sensitivity": sensitivity if dp else "N/A",
+        "epsilon": epsilon if dp else "N/A",
+        "delta": delta if dp else "N/A",
+        "noise_std": noise_std if dp else "N/A",
+        "noise_multiplier": noise_multiplier if dp else "N/A",
     }
     
     with open(results_dir / "config.json", "w" ) as file:

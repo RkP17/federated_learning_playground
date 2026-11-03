@@ -4,6 +4,7 @@ import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.clientapp.mod import LocalDpMod
+from flwr.common import MessageType
 
 from mnist_flower.task import MLP, load_data
 from mnist_flower.task import test as test_fn
@@ -12,11 +13,35 @@ from mnist_flower.task import train as train_fn
 import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 
+import math
+
+# Differential privacy 
+# class ConfigurableLocalDpMod:
+#     def __call__(self, msg, context, call_next):
+        
+#         # only apply dp to training messages
+#         if msg.metadata.message_type != MessageType.TRAIN:
+#             return call_next(msg, context)
+        
+#         clipping_norm = context.run_config["clipping-norm"]
+#         sensitivity = context.run_config["sensitivity"]
+#         epsilon = context.run_config["epsilon"]
+#         delta = context.run_config["delta"]
+        
+#         # instance of loaclDPmod
+#         local_dp_obj = LocalDpMod(
+#             clipping_norm,
+#             sensitivity,
+#             epsilon,
+#             delta
+#         )
+        
+#         return local_dp_obj(msg, context, call_next)
+
 # Flower ClientApp
+# mods=[ConfigurableLocalDpMod()]
 app = ClientApp()
 
-# instance of loaclDPmod
-local_dp_obj = LocalDpMod(app.clipping_norm, app.sensitivity, app.epsilon, app.delta)
 
 @app.train()
 def train(msg: Message, context: Context):
@@ -52,6 +77,7 @@ def train(msg: Message, context: Context):
     metric_record = MetricRecord(metrics)
     # dictionary of the models parameters and training metrics
     content = RecordDict({"arrays": model_record, "metrics": metric_record})
+    
     # return a reply to flower, so these can be used in model aggregation
     return Message(content=content, reply_to=msg)
 
@@ -62,6 +88,7 @@ def evaluate(msg: Message, context: Context):
 
     # Load the model and initialize it with the received weights
     model = MLP()
+    # arrays store the global model paramters 
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
