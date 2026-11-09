@@ -1,5 +1,3 @@
-"""federated-learning-flower: A Flower / PyTorch app."""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,14 +83,14 @@ def load_data(partition_id: int, num_partitions: int, batch_size: int):
     
     # ------------ Construct dataloaders ---------- #
     trainloader = DataLoader(
-        client_train, batch_size=batch_size, shuffle=True
+        client_train, batch_size=batch_size, shuffle=False
     )
     
     valloader = DataLoader(
-        client_val, batch_size=batch_size, shuffle=True
+        client_val, batch_size=batch_size, shuffle=False
     )
 
-    testloader = DataLoader(client_test_subset, batch_size=batch_size, shuffle=True)
+    testloader = DataLoader(client_test_subset, batch_size=batch_size, shuffle=False)
     return trainloader, valloader, testloader
 
 
@@ -142,10 +140,10 @@ def train(net, trainloader, epochs, lr, device):
             running_loss += loss.item() * labels.size(0)
             
 
-    avg_epoch_loss = running_loss / total
-    print(f"Epoch {epoch + 1}: Loss = {avg_epoch_loss:.4f}")
+    average_loss = running_loss / total
+    print(f"Epoch {epoch + 1}: Loss = {average_loss:.4f}")
     
-    return avg_epoch_loss
+    return average_loss
 
 
 def test(net, testloader, device):

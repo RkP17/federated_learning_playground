@@ -1,17 +1,14 @@
-"""pytorchexample: A Flower / PyTorch app."""
-
 import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
-from flwr.clientapp.mod import LocalDpMod
+from flwr.clientapp.mod import fixedclipping_mod
 from flwr.common import MessageType
 
 from mnist_flower.task import MLP, load_data
 from mnist_flower.task import test as test_fn
 from mnist_flower.task import train as train_fn
 
-import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+from mnist_flower.evaluation.metrics import calculate_metrics
 
 import math
 
@@ -38,9 +35,15 @@ import math
         
 #         return local_dp_obj(msg, context, call_next)
 
+def train_only_fixedclipping(msg, context, call_next):
+    if msg.metadata.message_type != MessageType.TRAIN:
+        return call_next(msg, context)
+    return fixedclipping_mod(msg, context, call_next)
+
+
 # Flower ClientApp
 # mods=[ConfigurableLocalDpMod()]
-app = ClientApp()
+app = ClientApp(mods=[train_only_fixedclipping])
 
 
 @app.train()
@@ -70,6 +73,7 @@ def train(msg: Message, context: Context):
 
     # save the updated models parameters    
     model_record = ArrayRecord(model.state_dict())
+    
     metrics = {
         "train_loss": train_loss,
         "num-examples": len(trainloader.dataset),
@@ -99,32 +103,28 @@ def evaluate(msg: Message, context: Context):
     batch_size = context.run_config["batch-size"]
     _, valloader, _ = load_data(partition_id, num_partitions, batch_size)
 
-    # Call the evaluation function
-    eval_loss, eval_acc, eval_y_pred, eval_y_true = test_fn(
+    # Test the client model
+    eval_loss, eval_acc, eval_y_true, eval_y_pred = test_fn(
         model,
         valloader,
         device,
     )
     
-    # classification report 
-    cr  = classification_report(eval_y_true, eval_y_pred)
-    print(f"Classification report for {partition_id}")
-    print("\n",cr)
-    
-    # Confusion matrix
-    # cm = confusion_matrix(eval_y_true, eval_y_pred)
-    # display_cm = ConfusionMatrixDisplay(confusion_matrix=cm)
-    # display_cm.plot()
-
-    # plt.show()
-
-    # Construct and return reply Message
     metrics = {
         "eval_loss": eval_loss,
         "eval_acc": eval_acc,
         "num-examples": len(valloader.dataset),
     }
     
-    metric_record = MetricRecord(metrics)
+    metrics = {**metrics, **calculate_metrics(eval_y_true, eval_y_pred)}
+    
+
+    # Flower MetricRecord cannot contain the nested confusion matrix.
+    flower_metrics = {
+        key: value
+        for key, value in metrics.items()
+        if isinstance(value, (int, float))
+    }
+    metric_record = MetricRecord(flower_metrics)
     content = RecordDict({"metrics": metric_record})
     return Message(content=content, reply_to=msg)

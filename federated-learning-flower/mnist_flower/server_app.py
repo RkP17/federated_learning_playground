@@ -1,18 +1,15 @@
-"""pytorchexample: A Flower / PyTorch app."""
-
-from matplotlib import pyplot as plt
-from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix
 import torch
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAvg
+from flwr.serverapp.strategy import FedAvg, DifferentialPrivacyClientSideFixedClipping
 
 from mnist_flower.task import MLP, load_centralized_dataset, test
+from mnist_flower.evaluation.metrics import calculate_metrics
 
 from pathlib import Path
 from datetime import datetime
 import json
-import math
+
 
 # Create ServerApp
 app = ServerApp()
@@ -30,13 +27,14 @@ def main(grid: Grid, context: Context) -> None:
 
     # Differential privacy parameters
     clipping_norm = float(context.run_config["clipping-norm"])
-    sensitivity = float(context.run_config["sensitivity"])
-    epsilon = float(context.run_config["epsilon"])
-    delta = float(context.run_config["delta"])
+    noise_multiplier = float(context.run_config["noise-multiplier"])
+    # sensitivity = float(context.run_config["sensitivity"])
+    # epsilon = float(context.run_config["epsilon"])
+    # delta = float(context.run_config["delta"])
 
     # Load global model
     global_model = MLP()
-    arrays = ArrayRecord(global_model.state_dict())
+    arrays = ArrayRecord(global_model.state_dict()) # initial model parameters
 
     # Initialize FedAvg strategy
     strategy = FedAvg(
@@ -45,13 +43,20 @@ def main(grid: Grid, context: Context) -> None:
         
     )
     
+    dp_strategy = DifferentialPrivacyClientSideFixedClipping(
+        strategy=strategy, 
+        noise_multiplier=noise_multiplier, 
+        clipping_norm=clipping_norm, 
+        num_sampled_clients=num_of_clients
+    )
+    
     global_metrics = []
 
     # Start strategy, run FedAvg for `num_rounds`
-    result = strategy.start(
+    result = dp_strategy.start(
         grid=grid,
-        initial_arrays=arrays,
-        train_config=ConfigRecord({"lr": lr}),
+        initial_arrays=arrays, # initial model parameters
+        train_config=ConfigRecord({"lr": lr}), # config to be sent during the training rounds
         num_rounds=num_rounds,
         evaluate_fn= lambda server_rounds, arrays: global_evaluate(server_rounds, arrays, global_metrics),
     )
@@ -73,21 +78,19 @@ def main(grid: Grid, context: Context) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     # Calculate Gaussian noise standard deviation
-    noise_std = (
-        sensitivity * math.sqrt(2 * math.log(1.25 / delta))
-    ) / epsilon
+    # noise_std = (
+    #     sensitivity * math.sqrt(2 * math.log(1.25 / delta))
+    # ) / epsilon
     
-    noise_multiplier = noise_std / clipping_norm
+    # noise_multiplier = noise_std / clipping_norm
     
     dp = True
 
     print(f"Saving experiment results to: {results_dir.resolve()}") 
     
-    print("\nSaving model metrics to results folder...")
     with open(results_dir / "global_metrics.json", "w", newline="") as file:
         json.dump(global_metrics, file, indent=4)
-    
-    print("\nSaving model config to results folder...")
+
     config = {
         "flower_run_id": run_id,
         "timestamp": timestamp,
@@ -102,11 +105,12 @@ def main(grid: Grid, context: Context) -> None:
         # Differential privacy configuration
         "differential_privacy": dp,
         "clipping_norm": clipping_norm if dp else "N/A",
-        "sensitivity": sensitivity if dp else "N/A",
-        "epsilon": epsilon if dp else "N/A",
-        "delta": delta if dp else "N/A",
-        "noise_std": noise_std if dp else "N/A",
-        "noise_multiplier": noise_multiplier if dp else "N/A",
+        "noise_multiplier": noise_multiplier if dp else "N/A"
+        # "sensitivity": sensitivity if dp else "N/A",
+        # "epsilon": epsilon if dp else "N/A",
+        # "delta": delta if dp else "N/A",
+        # "noise_std": noise_std if dp else "N/A",
+        # "noise_multiplier": noise_multiplier if dp else "N/A",
     }
     
     with open(results_dir / "config.json", "w" ) as file:
@@ -134,25 +138,21 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, global_metrics_log: 
 
     # Evaluate the global model on the test set
     test_loss, test_acc, test_y_true, test_y_pred = test(model, test_dataloader, device)
+        
+    global_metrics = calculate_metrics(test_y_true,test_y_pred)
+    global_metrics["accuracy"] = test_acc
+    global_metrics["loss"] = test_loss
     
     if global_metrics_log is not None:
         global_metrics_log.append({
             "round": server_round,
-            "accuracy": float(test_acc),
-            "loss": float(test_loss)
+            **global_metrics
         })
     
-    # classification report 
-    cr  = classification_report(test_y_true, test_y_pred)
-    print(f"Classification report for global model")
-    print("\n",cr) 
-    
-    # Confusion matrix
-    # cm = confusion_matrix(test_y_true, test_y_pred)
-    # display_cm = ConfusionMatrixDisplay(confusion_matrix=cm)
-    # display_cm.plot()
-
-    # plt.show()
-
     # Return the evaluation metrics
+    flower_metrics = {
+        key: value
+        for key, value in global_metrics.items()
+        if isinstance(value, (int, float))
+    }
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})
