@@ -14,9 +14,12 @@ __pycache__/
 # macOS
 .DS_Store
 
-#
+# datasets
 data/*
 
+# results 
 results/
 
 02_federated_learning/max_norm_results.csv
+
+federated-learning-flower/results/

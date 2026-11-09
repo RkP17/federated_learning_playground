@@ -155,4 +155,4 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, global_metrics_log: 
         for key, value in global_metrics.items()
         if isinstance(value, (int, float))
     }
-    return MetricRecord({"accuracy": test_acc, "loss": test_loss})
+    return MetricRecord(flower_metrics)
